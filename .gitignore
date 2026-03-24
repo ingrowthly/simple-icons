@@ -6,3 +6,5 @@
 .qodana
 build
 generated
+*.pem
+*.crt
