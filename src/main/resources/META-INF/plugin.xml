@@ -4,13 +4,17 @@
     <name>Simple Icons</name>
     <vendor>ingrowthly</vendor>
 
+    <description>
+        Simple Icons plugin provides a set of popular icons for use in IntelliJ IDEA and other JetBrains IDEs.
+    </description>
+
     <depends>com.intellij.modules.platform</depends>
 
     <resource-bundle>messages.MyBundle</resource-bundle>
 
     <extensions defaultExtensionNs="com.intellij">
-        <projectViewNodeDecorator
-                implementation="io.github.ingrowthly.icons.decorators.IconDecorator"/>
+        <fileIconProvider
+                implementation="io.github.ingrowthly.icons.MyIconProvider"/>
     </extensions>
 
     <applicationListeners>
