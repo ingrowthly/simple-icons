@@ -3,7 +3,11 @@ package io.github.ingrowthly.icons
 internal data class RuleMatch(
     val iconId: Int,
     val priority: Int,
-    val specificity: Int = 0,
+)
+
+internal data class PathRule(
+    val suffix: String,
+    val match: RuleMatch,
 )
 
 internal data class NameGlobRule(
@@ -11,154 +15,78 @@ internal data class NameGlobRule(
     val suffix: String,
     val pathAware: Boolean,
     val match: RuleMatch,
-)
+) {
+    val literalLength: Int = prefix.length + suffix.length
+}
 
 internal class FileRuleResolver(
     private val exactNameRules: Map<String, RuleMatch>,
-    private val exactPathRules: List<Pair<String, RuleMatch>>,
-    private val nameGlobRules: List<NameGlobRule>,
+    exactPathRules: List<PathRule>,
+    nameGlobRules: List<NameGlobRule>,
     private val extensionTrie: ExtensionTrie,
 ) {
+    private val exactPathRulesByName = exactPathRules.groupBy { it.suffix.substringAfterLast('/') }
+    private val globIndex = GlobSuffixIndex(nameGlobRules)
+
     fun resolveFile(name: String, path: String): Int? {
-        var best: RuleMatch? = null
+        var bestIconId = NO_ICON
+        var bestRank = Long.MIN_VALUE
 
-        exactNameRules[name]?.let { best = pick(best, it, SPECIFICITY_EXACT_NAME) }
-
-        for ((pathSuffix, match) in exactPathRules) {
-            if (path == pathSuffix || path.endsWith("/$pathSuffix")) {
-                best = pick(best, match, SPECIFICITY_EXACT_PATH)
-                break
-            }
+        exactNameRules[name]?.let { match ->
+            bestIconId = match.iconId
+            bestRank = rank(match, TYPE_EXACT_NAME, name.length)
         }
 
-        for (rule in nameGlobRules) {
-            val subject = if (rule.pathAware) path else name
-            if (subject.startsWith(rule.prefix) && subject.endsWith(rule.suffix)) {
-                best = pick(best, rule.match, if (rule.pathAware) SPECIFICITY_GLOB_PATH else SPECIFICITY_GLOB_NAME)
-            }
-        }
-
-        extensionTrie.match(name)?.let { best = pick(best, it, SPECIFICITY_EXTENSION) }
-
-        return best?.iconId
-    }
-
-    private fun pick(current: RuleMatch?, candidate: RuleMatch, specificity: Int): RuleMatch {
-        val rankedCandidate = candidate.copy(specificity = specificity)
-        if (current == null) return rankedCandidate
-
-        return when {
-            rankedCandidate.priority > current.priority -> rankedCandidate
-            rankedCandidate.priority < current.priority -> current
-            rankedCandidate.specificity > current.specificity -> rankedCandidate
-            else -> current
-        }
-    }
-
-    internal companion object {
-        const val SPECIFICITY_EXTENSION = 100
-        const val SPECIFICITY_GLOB_NAME = 200
-        const val SPECIFICITY_GLOB_PATH = 300
-        const val SPECIFICITY_EXACT_NAME = 400
-        const val SPECIFICITY_EXACT_PATH = 500
-    }
-}
-
-internal class ExtensionTrie(
-    private val iconIds: IntArray,
-    private val priorities: IntArray,
-    private val edgeStarts: IntArray,
-    private val edgeCounts: IntArray,
-    private val edgeChars: CharArray,
-    private val edgeTargets: IntArray,
-) {
-    fun match(name: String): RuleMatch? {
-        var nodeIndex = 0
-        var best: RuleMatch? = null
-
-        for (index in name.lastIndex downTo 0) {
-            val edgeIndex = findEdge(nodeIndex, name[index]) ?: break
-            nodeIndex = edgeTargets[edgeIndex]
-
-            val iconId = iconIds[nodeIndex]
-            if (iconId >= 0) {
-                best = RuleMatch(iconId = iconId, priority = priorities[nodeIndex])
-            }
-        }
-
-        return best
-    }
-
-    private fun findEdge(nodeIndex: Int, target: Char): Int? {
-        var low = edgeStarts[nodeIndex]
-        var high = low + edgeCounts[nodeIndex] - 1
-
-        while (low <= high) {
-            val mid = (low + high) ushr 1
-            when (val candidate = edgeChars[mid]) {
-                target -> return mid
-                else -> if (candidate < target) low = mid + 1 else high = mid - 1
-            }
-        }
-
-        return null
-    }
-
-    internal companion object {
-        fun fromExtensions(entries: List<Pair<String, RuleMatch>>): ExtensionTrie {
-            class Node {
-                val children = sortedMapOf<Char, Node>()
-                var match: RuleMatch? = null
-                var index: Int = -1
-            }
-
-            val root = Node()
-            entries.sortedByDescending { it.second.priority }.forEach { (extension, match) ->
-                var node = root
-                for (char in extension.reversed()) {
-                    node = node.children.getOrPut(char) { Node() }
-                }
-                val existing = node.match
-                if (existing == null || match.priority > existing.priority) {
-                    node.match = match
+        exactPathRulesByName[name]?.forEach { rule ->
+            if (pathEndsWith(path, rule.suffix)) {
+                val candidateRank = rank(rule.match, TYPE_EXACT_PATH, rule.suffix.length)
+                if (candidateRank > bestRank) {
+                    bestIconId = rule.match.iconId
+                    bestRank = candidateRank
                 }
             }
-
-            val nodes = mutableListOf<Node>()
-            fun collect(node: Node) {
-                if (node.index != -1) return
-                node.index = nodes.size
-                nodes += node
-                node.children.values.forEach(::collect)
-            }
-            collect(root)
-
-            val iconIds = IntArray(nodes.size)
-            val priorities = IntArray(nodes.size)
-            val edgeStarts = IntArray(nodes.size)
-            val edgeCounts = IntArray(nodes.size)
-
-            var edgeStart = 0
-            nodes.forEachIndexed { index, node ->
-                iconIds[index] = node.match?.iconId ?: -1
-                priorities[index] = node.match?.priority ?: Int.MIN_VALUE
-                edgeStarts[index] = edgeStart
-                edgeCounts[index] = node.children.size
-                edgeStart += node.children.size
-            }
-
-            val edgeChars = CharArray(edgeStart)
-            val edgeTargets = IntArray(edgeStart)
-            var cursor = 0
-            nodes.forEach { node ->
-                node.children.forEach { (char, child) ->
-                    edgeChars[cursor] = char
-                    edgeTargets[cursor] = child.index
-                    cursor++
-                }
-            }
-
-            return ExtensionTrie(iconIds, priorities, edgeStarts, edgeCounts, edgeChars, edgeTargets)
         }
+
+        globIndex.match(name, path)?.let { rule ->
+            val type = if (rule.pathAware) TYPE_GLOB_PATH else TYPE_GLOB_NAME
+            val candidateRank = rank(rule.match, type, rule.literalLength)
+            if (candidateRank > bestRank) {
+                bestIconId = rule.match.iconId
+                bestRank = candidateRank
+            }
+        }
+
+        val extensionNode = extensionTrie.matchNode(name)
+        if (extensionNode != NO_MATCH) {
+            val candidateRank = rank(extensionTrie.priorityAt(extensionNode), TYPE_EXTENSION, 0)
+            if (candidateRank > bestRank) {
+                bestIconId = extensionTrie.iconIdAt(extensionNode)
+            }
+        }
+
+        return bestIconId.takeIf { it != NO_ICON }
+    }
+
+    private fun rank(match: RuleMatch, type: Int, literalLength: Int): Long =
+        rank(match.priority, type, literalLength)
+
+    // Packing the rank keeps the per-file resolution path allocation-free.
+    private fun rank(priority: Int, type: Int, literalLength: Int): Long {
+        val specificity = (type shl TYPE_SHIFT) or literalLength.coerceAtMost(LENGTH_MASK)
+        return (priority.toLong() shl Int.SIZE_BITS) or (specificity.toLong() and UINT_MASK)
+    }
+
+    private companion object {
+        const val NO_ICON = -1
+        const val NO_MATCH = -1
+        const val TYPE_SHIFT = 24
+        const val LENGTH_MASK = 0x00FF_FFFF
+        const val UINT_MASK = 0xFFFF_FFFFL
+
+        const val TYPE_EXTENSION = 1
+        const val TYPE_GLOB_NAME = 2
+        const val TYPE_GLOB_PATH = 3
+        const val TYPE_EXACT_NAME = 4
+        const val TYPE_EXACT_PATH = 5
     }
 }

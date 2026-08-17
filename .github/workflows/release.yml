@@ -1,63 +1,128 @@
-# GitHub Actions Workflow created for handling the release process based on the draft release prepared with the Build workflow.
-# Running the publishPlugin task requires all the following secrets to be provided: PUBLISH_TOKEN, PRIVATE_KEY, PRIVATE_KEY_PASSWORD, CERTIFICATE_CHAIN.
-# See https://plugins.jetbrains.com/docs/intellij/plugin-signing.html for more information.
-
 name: Release
+
 on:
-  release:
-    types: [ prereleased, released ]
+  push:
+    tags:
+      - "v*.*.*"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  JAVA_VERSION: "21"
+  GRADLE_OPTS: -Dorg.gradle.daemon=false -Dorg.gradle.jvmargs="-Xmx2g -XX:MaxMetaspaceSize=1g"
 
 jobs:
-
-  # Prepare and publish the plugin to JetBrains Marketplace repository
-  release:
-    name: Publish Plugin
+  publish:
+    name: Publish ${{ github.ref_name }}
     runs-on: ubuntu-latest
-    permissions:
-      contents: write
-      pull-requests: write
-    steps:
+    timeout-minutes: 60
+    environment: jetbrains-marketplace
 
-      # Free GitHub Actions Environment Disk Space
-      - name: Maximize Build Space
+    steps:
+      - name: Free disk space
         uses: jlumbroso/free-disk-space@v1.3.1
         with:
           tool-cache: false
           large-packages: false
 
-      # Check out the current repository
-      - name: Fetch Sources
-        uses: actions/checkout@v6
+      - name: Check out release tag
+        uses: actions/checkout@v7
         with:
-          ref: ${{ github.event.release.tag_name }}
+          fetch-depth: 0
+          persist-credentials: false
 
-      # Set up the Java environment for the next steps
-      - name: Setup Java
+      - name: Validate Gradle wrapper
+        uses: gradle/actions/wrapper-validation@v5
+
+      - name: Set up Java
         uses: actions/setup-java@v5
         with:
           distribution: zulu
-          java-version: 21
+          java-version: ${{ env.JAVA_VERSION }}
 
-      # Setup Gradle
-      - name: Setup Gradle
+      - name: Set up Gradle
         uses: gradle/actions/setup-gradle@v5
         with:
           cache-read-only: true
 
-      # Update the Unreleased section with the current release note
-      - name: Patch Changelog
-        if: ${{ github.event.release.body != '' }}
-        env:
-          CHANGELOG: ${{ github.event.release.body }}
+      - name: Validate release metadata
+        id: release
+        shell: bash
         run: |
-          RELEASE_NOTE="./build/tmp/release_note.txt"
-          mkdir -p "$(dirname "$RELEASE_NOTE")"
-          echo "$CHANGELOG" > $RELEASE_NOTE
+          set -euo pipefail
 
-          ./gradlew patchChangelog --release-note-file=$RELEASE_NOTE
+          tag="$GITHUB_REF_NAME"
+          identifier='(0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*)'
+          semver="^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)(-${identifier}(\\.${identifier})*)?(\\+[0-9A-Za-z-]+(\\.[0-9A-Za-z-]+)*)?$"
+          version="${tag#v}"
 
-      # Publish the plugin to JetBrains Marketplace
-      - name: Publish Plugin
+          if [[ "$tag" != v* || ! "$version" =~ $semver ]]; then
+            echo "Release tag must be v<SemVer>; received: $tag" >&2
+            exit 1
+          fi
+
+          release_commit="$(git rev-list -n 1 "$tag")"
+          if ! git merge-base --is-ancestor "$release_commit" origin/master; then
+            echo "Release tag $tag must point to a commit contained in master" >&2
+            exit 1
+          fi
+
+          project_version="$(sed -n 's/^pluginVersion[[:space:]]*=[[:space:]]*//p' gradle.properties)"
+          if [[ "$project_version" != "$version" ]]; then
+            echo "Tag version $version does not match pluginVersion $project_version" >&2
+            exit 1
+          fi
+
+          if ! grep -Fq "## [$version] - " CHANGELOG.md; then
+            echo "CHANGELOG.md has no released section for $version" >&2
+            exit 1
+          fi
+
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          if [[ "$version" == *-* ]]; then
+            echo "prerelease=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "prerelease=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Validate Marketplace secrets
+        shell: bash
+        env:
+          PUBLISH_TOKEN: ${{ secrets.PUBLISH_TOKEN }}
+          CERTIFICATE_CHAIN: ${{ secrets.CERTIFICATE_CHAIN }}
+          PRIVATE_KEY: ${{ secrets.PRIVATE_KEY }}
+          PRIVATE_KEY_PASSWORD: ${{ secrets.PRIVATE_KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
+          missing=()
+          [[ -n "$PUBLISH_TOKEN" ]] || missing+=(PUBLISH_TOKEN)
+          [[ -n "$CERTIFICATE_CHAIN" ]] || missing+=(CERTIFICATE_CHAIN)
+          [[ -n "$PRIVATE_KEY" ]] || missing+=(PRIVATE_KEY)
+          [[ -n "$PRIVATE_KEY_PASSWORD" ]] || missing+=(PRIVATE_KEY_PASSWORD)
+          if (( ${#missing[@]} )); then
+            echo "Missing jetbrains-marketplace secrets: ${missing[*]}" >&2
+            exit 1
+          fi
+
+      - name: Check and verify release
+        run: ./gradlew check verifyPlugin
+
+      - name: Generate release notes
+        run: |
+          mkdir -p build/release
+          ./gradlew getChangelog \
+            --project-version "${{ steps.release.outputs.version }}" \
+            --no-header \
+            --no-links \
+            --no-empty-sections \
+            --output-file=build/release/notes.md
+
+      - name: Publish to JetBrains Marketplace
         env:
           PUBLISH_TOKEN: ${{ secrets.PUBLISH_TOKEN }}
           CERTIFICATE_CHAIN: ${{ secrets.CERTIFICATE_CHAIN }}
@@ -65,36 +130,44 @@ jobs:
           PRIVATE_KEY_PASSWORD: ${{ secrets.PRIVATE_KEY_PASSWORD }}
         run: ./gradlew publishPlugin
 
-      # Upload an artifact as a release asset
-      - name: Upload Release Asset
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: gh release upload ${{ github.event.release.tag_name }} ./build/distributions/*
+      - name: Upload signed plugin artifact
+        uses: actions/upload-artifact@v6
+        with:
+          name: simple-icons-${{ steps.release.outputs.version }}-signed
+          path: build/distributions/*-signed.zip
+          if-no-files-found: error
+          retention-days: 30
 
-      # Create a pull request
-      - name: Create Pull Request
-        if: ${{ github.event.release.body != '' }}
+      - name: Create GitHub release
+        shell: bash
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.release.outputs.version }}
+          PRERELEASE: ${{ steps.release.outputs.prerelease }}
         run: |
-          VERSION="${{ github.event.release.tag_name }}"
-          BRANCH="changelog-update-$VERSION"
-          LABEL="release changelog"
+          set -euo pipefail
+          shopt -s nullglob
+          artifacts=(build/distributions/*-signed.zip)
+          if (( ${#artifacts[@]} != 1 )); then
+            echo "Expected one signed plugin archive, found ${#artifacts[@]}" >&2
+            exit 1
+          fi
 
-          git config user.email "action@github.com"
-          git config user.name "GitHub Action"
+          release_args=(
+            "$GITHUB_REF_NAME"
+            "${artifacts[0]}"
+            --verify-tag
+            --title "Simple Icons $VERSION"
+            --notes-file build/release/notes.md
+          )
+          if [[ "$PRERELEASE" == "true" ]]; then
+            release_args+=(--prerelease)
+          else
+            release_args+=(--latest)
+          fi
 
-          git checkout -b $BRANCH
-          git commit -am "Changelog update - $VERSION"
-          git push --set-upstream origin $BRANCH
-
-          gh label create "$LABEL" \
-            --description "Pull requests with release changelog update" \
-            --force \
-            || true
-
-          gh pr create \
-            --title "Changelog update - \`$VERSION\`" \
-            --body "Current pull request contains patched \`CHANGELOG.md\` file for the \`$VERSION\` version." \
-            --label "$LABEL" \
-            --head $BRANCH
+          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+            gh release upload "$GITHUB_REF_NAME" "${artifacts[0]}" --clobber
+          else
+            gh release create "${release_args[@]}"
+          fi

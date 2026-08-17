@@ -4,8 +4,14 @@ import com.fasterxml.jackson.annotation.JsonIgnoreProperties
 import com.fasterxml.jackson.module.kotlin.jacksonObjectMapper
 import com.fasterxml.jackson.module.kotlin.readValue
 import org.gradle.api.DefaultTask
+import org.gradle.api.GradleException
+import org.gradle.api.file.DirectoryProperty
+import org.gradle.api.tasks.CacheableTask
+import org.gradle.api.tasks.InputDirectory
 import org.gradle.api.tasks.InputFile
 import org.gradle.api.tasks.OutputDirectory
+import org.gradle.api.tasks.PathSensitive
+import org.gradle.api.tasks.PathSensitivity
 import org.gradle.api.tasks.TaskAction
 import java.io.BufferedOutputStream
 import java.io.DataOutputStream
@@ -18,7 +24,6 @@ data class Wrapper(val value: Rule)
 data class Rule(
     val fileNames: String? = null,
     val folderNames: String? = null,
-    val pattern: String? = null,
     val icon: String,
     val priority: String? = "0",
 )
@@ -27,11 +32,12 @@ private data class RuleMatch(val iconId: Int, val priority: Int)
 private data class NameGlob(val prefix: String, val suffix: String, val pathAware: Boolean)
 
 private class TrieNode {
-    val children = mutableMapOf<Char, TrieNode>()
+    val children = sortedMapOf<Char, TrieNode>()
     var match: RuleMatch? = null
     var index: Int = -1
 }
 
+@CacheableTask
 abstract class IconGenTask : DefaultTask() {
     companion object {
         private const val FILE_RULE_MAGIC = 0x53494631 // SIF1
@@ -40,16 +46,26 @@ abstract class IconGenTask : DefaultTask() {
         private const val NAME_GLOB_MAGIC = 0x53494E31 // SIN1
     }
 
-    @InputFile
+    @get:InputFile
+    @get:PathSensitive(PathSensitivity.RELATIVE)
     val filesJson = project.objects.fileProperty()
 
-    @InputFile
+    @get:InputFile
+    @get:PathSensitive(PathSensitivity.RELATIVE)
     val foldersJson = project.objects.fileProperty()
 
-    @OutputDirectory
+    @get:InputDirectory
+    @get:PathSensitive(PathSensitivity.RELATIVE)
+    val fileIconDir: DirectoryProperty = project.objects.directoryProperty()
+
+    @get:InputDirectory
+    @get:PathSensitive(PathSensitivity.RELATIVE)
+    val folderIconDir: DirectoryProperty = project.objects.directoryProperty()
+
+    @get:OutputDirectory
     val kotlinOutputDir = project.objects.directoryProperty()
 
-    @OutputDirectory
+    @get:OutputDirectory
     val resourceOutputDir = project.objects.directoryProperty()
 
     @TaskAction
@@ -62,9 +78,11 @@ abstract class IconGenTask : DefaultTask() {
         val exactNameRules = mutableMapOf<String, RuleMatch>()
         val exactPathRules = mutableMapOf<String, RuleMatch>()
         val nameGlobRules = mutableMapOf<NameGlob, RuleMatch>()
-        val folderMap = mutableMapOf<String, Int>()
-        val extensionRules = mutableListOf<Pair<String, RuleMatch>>()
+        val folderMap = mutableMapOf<String, RuleMatch>()
+        val extensionRules = mutableMapOf<String, RuleMatch>()
         val iconIds = linkedMapOf<String, Int>()
+        val availableFileIcons = fileIconDir.get().asFile.listIconNames()
+        val availableFolderIcons = folderIconDir.get().asFile.listIconNames()
 
         fun splitNames(raw: String?) =
             raw?.split(",")?.map { it.trim().lowercase() }?.filter { it.isNotEmpty() } ?: emptyList()
@@ -86,30 +104,44 @@ abstract class IconGenTask : DefaultTask() {
         fun parseGlob(raw: String): NameGlob? {
             val starIndex = raw.indexOf('*')
             if (starIndex == -1 || raw.indexOf('*', starIndex + 1) != -1) return null
-            return NameGlob(
+            val glob = NameGlob(
                 prefix = raw.substring(0, starIndex),
                 suffix = raw.substring(starIndex + 1),
                 pathAware = '/' in raw,
             )
+            if (glob.suffix.isEmpty() || glob.pathAware && !glob.prefix.endsWith('/')) return null
+            return glob
         }
 
         fun iconIdFor(rule: Rule, isFolder: Boolean): Int {
-            val iconFile = rule.icon.substringAfterLast("/").substringBefore(".")
-            val path = if (isFolder) "/icons/folders/$iconFile.svg" else "/icons/files/$iconFile.svg"
+            val iconFile = rule.icon.substringAfterLast('/')
+            val availableIcons = if (isFolder) availableFolderIcons else availableFileIcons
+            if (iconFile !in availableIcons) {
+                throw GradleException("Missing ${if (isFolder) "folder" else "file"} icon: $iconFile")
+            }
+            val path = if (isFolder) "/icons/folders/$iconFile" else "/icons/files/$iconFile"
             return iconIds.getOrPut(path) { iconIds.size }
         }
 
+        fun priorityOf(rule: Rule): Int {
+            val rawPriority = rule.priority ?: return 0
+            return rawPriority.toIntOrNull()
+                ?: throw GradleException("Invalid priority '$rawPriority' for icon ${rule.icon}")
+        }
+
         fun processFileRule(rule: Rule) {
-            val priority = rule.priority?.toIntOrNull() ?: 0
+            val priority = priorityOf(rule)
             val iconId = iconIdFor(rule, isFolder = false)
 
             splitNames(rule.fileNames).forEach { raw ->
                 when {
                     raw.startsWith("*.") -> {
-                        extensionRules += raw.removePrefix("*") to RuleMatch(iconId, priority)
+                        addExactRule(extensionRules, raw.removePrefix("*"), iconId, priority)
                     }
                     '*' in raw -> {
-                        parseGlob(raw)?.let { addGlobRule(nameGlobRules, it, iconId, priority) }
+                        val glob = parseGlob(raw)
+                            ?: throw GradleException("Unsupported glob '$raw': expected exactly one '*' wildcard")
+                        addGlobRule(nameGlobRules, glob, iconId, priority)
                     }
                     '/' in raw -> {
                         addExactRule(exactPathRules, raw, iconId, priority)
@@ -122,9 +154,13 @@ abstract class IconGenTask : DefaultTask() {
         }
 
         fun processFolderRule(rule: Rule) {
+            val priority = priorityOf(rule)
             val iconId = iconIdFor(rule, isFolder = true)
             splitNames(rule.folderNames).forEach { folderName ->
-                folderMap[folderName] = iconId
+                val existing = folderMap[folderName]
+                if (existing == null || priority >= existing.priority) {
+                    folderMap[folderName] = RuleMatch(iconId, priority)
+                }
             }
         }
 
@@ -132,8 +168,8 @@ abstract class IconGenTask : DefaultTask() {
         folderRules.forEach { processFolderRule(it.value) }
 
         val root = TrieNode()
-        extensionRules
-            .sortedByDescending { it.second.priority }
+        extensionRules.entries
+            .sortedBy { it.key }
             .forEach { (extension, match) ->
                 var node = root
                 for (char in extension.reversed()) {
@@ -149,19 +185,20 @@ abstract class IconGenTask : DefaultTask() {
         val iconsCode = buildString {
             appendLine("package io.github.ingrowthly.icons.generated")
             appendLine("import com.intellij.openapi.util.IconLoader")
+            appendLine("import java.util.concurrent.atomic.AtomicReferenceArray")
             appendLine("import javax.swing.Icon")
             appendLine("object GeneratedIcons {")
             appendLine("    private val PATHS = arrayOf(")
             sortedIconPaths.forEach { path -> appendLine("""        "$path",""") }
             appendLine("    )")
             appendLine()
-            appendLine("    private val cache = arrayOfNulls<Icon>(PATHS.size)")
+            appendLine("    private val cache = AtomicReferenceArray<Icon?>(PATHS.size)")
             appendLine()
             appendLine("    fun get(iconId: Int): Icon {")
-            appendLine("        cache[iconId]?.let { return it }")
-            appendLine("        return synchronized(this) {")
-            appendLine("            cache[iconId] ?: IconLoader.getIcon(PATHS[iconId], GeneratedIcons::class.java).also { cache[iconId] = it }")
-            appendLine("        }")
+            appendLine("        cache.get(iconId)?.let { return it }")
+            appendLine("        val loaded = IconLoader.getIcon(PATHS[iconId], GeneratedIcons::class.java)")
+            appendLine("        if (cache.compareAndSet(iconId, null, loaded)) return loaded")
+            appendLine("        return cache.get(iconId) ?: loaded")
             appendLine("    }")
             appendLine("}")
         }
@@ -225,7 +262,7 @@ abstract class IconGenTask : DefaultTask() {
                 if (node.index != -1) return
                 node.index = nodes.size
                 nodes += node
-                node.children.toSortedMap().values.forEach(::collect)
+                node.children.values.forEach(::collect)
             }
 
             collect(rootNode)
@@ -238,16 +275,15 @@ abstract class IconGenTask : DefaultTask() {
 
                 var edgeStart = 0
                 nodes.forEach { node ->
-                    val children = node.children.toSortedMap()
                     output.writeInt(node.match?.iconId ?: -1)
                     output.writeInt(node.match?.priority ?: Int.MIN_VALUE)
                     output.writeInt(edgeStart)
-                    output.writeInt(children.size)
-                    edgeStart += children.size
+                    output.writeInt(node.children.size)
+                    edgeStart += node.children.size
                 }
 
                 nodes.forEach { node ->
-                    node.children.toSortedMap().forEach { (char, child) ->
+                    node.children.forEach { (char, child) ->
                         output.writeChar(char.code)
                         output.writeInt(child.index)
                     }
@@ -274,8 +310,15 @@ abstract class IconGenTask : DefaultTask() {
         )
         writeFolderMap(
             File(resourceOut, "icons/generated/folder-names.bin"),
-            folderMap.entries.sortedBy { it.key }.map { it.key to it.value },
+            folderMap.entries.sortedBy { it.key }.map { it.key to it.value.iconId },
         )
         writeExtensionTrie(File(resourceOut, "icons/generated/extension-trie.bin"), root)
     }
+
+    private fun File.listIconNames(): Set<String> =
+        listFiles()
+            ?.asSequence()
+            ?.filter { it.isFile && it.extension == "svg" }
+            ?.mapTo(mutableSetOf()) { it.name }
+            ?: throw GradleException("Icon directory does not exist: $this")
 }

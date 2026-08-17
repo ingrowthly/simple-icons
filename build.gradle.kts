@@ -13,10 +13,6 @@ plugins {
     alias(libs.plugins.kover) // Gradle Kover Plugin
 }
 
-dependencies {
-    implementation("com.fasterxml.jackson.module:jackson-module-kotlin:2.17.0")
-}
-
 group = providers.gradleProperty("pluginGroup").get()
 version = providers.gradleProperty("pluginVersion").get()
 
@@ -68,6 +64,8 @@ dependencies {
 
 // Configure IntelliJ Platform Gradle Plugin - read more: https://plugins.jetbrains.com/docs/intellij/tools-intellij-platform-gradle-plugin-extension.html
 intellijPlatform {
+    buildSearchableOptions = false
+
     pluginConfiguration {
         name = providers.gradleProperty("pluginName")
         version = providers.gradleProperty("pluginVersion")
@@ -114,7 +112,9 @@ intellijPlatform {
         // The pluginVersion is based on the SemVer (https://semver.org) and supports pre-release labels, like 2.1.7-alpha.3
         // Specify pre-release label to publish the plugin in a custom Release Channel automatically. Read more:
         // https://plugins.jetbrains.com/docs/intellij/publishing-plugin.html#specifying-a-release-channel
-        channels = providers.gradleProperty("pluginVersion").map { listOf(it.substringAfter('-', "").substringBefore('.').ifEmpty { "default" }) }
+        channels = providers.gradleProperty("pluginVersion").map {
+            listOf(it.substringAfter('-', "").substringBefore('.').substringBefore('+').ifEmpty { "default" })
+        }
     }
 
     pluginVerification {
@@ -146,10 +146,6 @@ tasks {
     wrapper {
         gradleVersion = providers.gradleProperty("gradleVersion").get()
     }
-
-    publishPlugin {
-        dependsOn(patchChangelog)
-    }
 }
 
 intellijPlatformTesting {
@@ -177,6 +173,8 @@ tasks.register<IconGenTask>("generateIconKotlin") {
 
     filesJson.set(file("icons/files.json"))
     foldersJson.set(file("icons/folders.json"))
+    fileIconDir.set(layout.projectDirectory.dir("src/main/resources/icons/files"))
+    folderIconDir.set(layout.projectDirectory.dir("src/main/resources/icons/folders"))
     kotlinOutputDir.set(layout.buildDirectory.dir("generated/sources/iconKotlin/main/io/github/ingrowthly/icons/generated"))
     resourceOutputDir.set(layout.buildDirectory.dir("generated/resources/iconData/main"))
 }

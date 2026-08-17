@@ -1,10 +1,46 @@
+# Operating system files
 .DS_Store
-.gradle
-.idea
-.intellijPlatform
-.kotlin
-.qodana
-build
-generated
+Thumbs.db
+
+# IntelliJ IDEA and other editors
+.idea/
+*.iml
+*.ipr
+*.iws
+.fleet/
+.vscode/
+out/
+*.swp
+*.swo
+*~
+
+# Gradle and Kotlin build state
+.gradle/
+.kotlin/
+build/
+generated/
+
+# IntelliJ Platform and quality-tool state
+.intellijPlatform/
+.qodana/
+
+# Local agent configuration
+.codex/
+
+# Logs, crash dumps, and temporary files
+*.log
+*.hprof
+hs_err_pid*
+replay_pid*
+*.tmp
+
+# Local configuration and secrets
+local.properties
+.env
+.env.*
+!.env.example
 *.pem
+*.key
+*.p12
+*.pfx
 *.crt

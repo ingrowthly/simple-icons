@@ -7504,7 +7504,7 @@
       "priority": "100",
       "iconType": "FILE",
       "pattern": "[Gg]roovyfile$",
-      "icon": "/icons/files/groovyfile.svg"
+      "icon": "/icons/files/groovyFile.svg"
     }
   },
   {
@@ -19888,7 +19888,7 @@
       "iconType": "FILE",
       "pattern": ".*\\.(dcm|ecw|hdp|hdr|heic|heif|iff)$",
       "iconColor": "92AC5A",
-      "icon": "/icons/files/image2.svg"
+      "icon": "/icons/files/image.svg"
     }
   },
   {
@@ -19899,7 +19899,7 @@
       "iconType": "FILE",
       "pattern": ".*\\.(pcx|pict|pxr|raw|sgi|tga|tiff|wbmp?|px[mbgs])$",
       "iconColor": "92AC5A",
-      "icon": "/icons/files/image3.svg"
+      "icon": "/icons/files/image.svg"
     }
   },
   {
@@ -20056,7 +20056,7 @@
       "pattern": ".*\\.(gz|pzip|saz|tgz|bz2|xar|egg|sit)$",
       "iconColor": "C792EA",
       "url": "https://en.wikipedia.org/wiki/Archive_file",
-      "icon": "/icons/files/archive2.svg"
+      "icon": "/icons/files/archive.svg"
     }
   },
   {
@@ -20068,7 +20068,7 @@
       "pattern": ".*\\.(lzo?|lzma|tlz|hqx|whl|xar|ear|hak)$",
       "iconColor": "C792EA",
       "url": "https://en.wikipedia.org/wiki/Archive_file",
-      "icon": "/icons/files/archive3.svg"
+      "icon": "/icons/files/archive.svg"
     }
   },
   {

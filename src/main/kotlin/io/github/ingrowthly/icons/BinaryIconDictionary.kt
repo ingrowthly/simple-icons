@@ -6,13 +6,13 @@ import java.io.DataInputStream
 import java.nio.charset.StandardCharsets
 import javax.swing.Icon
 
-object BinaryIconDictionary {
+internal object BinaryIconDictionary {
     private const val FILE_RULE_MAGIC = 0x53494631 // SIF1
     private const val NAME_MAP_MAGIC = 0x53494D31 // SIM1
     private const val TRIE_MAGIC = 0x53495431 // SIT1
     private const val NAME_GLOB_MAGIC = 0x53494E31 // SIN1
 
-    private val fileRuleResolver by lazy(LazyThreadSafetyMode.PUBLICATION) {
+    private val fileRuleResolver by lazy {
         FileRuleResolver(
             exactNameRules = loadRuleMap("/icons/generated/file-names.bin"),
             exactPathRules = loadPathRules("/icons/generated/file-paths.bin"),
@@ -21,7 +21,7 @@ object BinaryIconDictionary {
         )
     }
 
-    private val folderNameMap by lazy(LazyThreadSafetyMode.PUBLICATION) {
+    private val folderNameMap by lazy {
         loadNameMap("/icons/generated/folder-names.bin")
     }
 
@@ -66,15 +66,18 @@ object BinaryIconDictionary {
         }
     }
 
-    private fun loadPathRules(path: String): List<Pair<String, RuleMatch>> {
+    private fun loadPathRules(path: String): List<PathRule> {
         val input = openStream(path)
         DataInputStream(BufferedInputStream(input)).use { stream ->
             require(stream.readInt() == FILE_RULE_MAGIC) { "Invalid path rule map: $path" }
             val entryCount = stream.readInt()
             return List(entryCount) {
-                stream.readUtf8() to RuleMatch(
-                    iconId = stream.readInt(),
-                    priority = stream.readInt(),
+                PathRule(
+                    suffix = stream.readUtf8(),
+                    match = RuleMatch(
+                        iconId = stream.readInt(),
+                        priority = stream.readInt(),
+                    ),
                 )
             }
         }

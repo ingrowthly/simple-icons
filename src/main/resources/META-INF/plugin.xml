@@ -14,7 +14,7 @@
 
     <extensions defaultExtensionNs="com.intellij">
         <fileIconProvider
-                implementation="io.github.ingrowthly.icons.MyIconProvider"/>
+                implementation="io.github.ingrowthly.icons.SimpleIconProvider"/>
     </extensions>
 
     <applicationListeners>
