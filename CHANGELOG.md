@@ -4,6 +4,11 @@
 
 ## [Unreleased]
 
+### Changed
+
+- Bundled project and third-party license notices with the plugin distribution
+- Documented icon provenance and trademark ownership
+
 ## [1.0.1] - 2026-08-17
 
 ### Changed

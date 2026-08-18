@@ -185,4 +185,11 @@ tasks.named("compileKotlin") {
 
 tasks.named<ProcessResources>("processResources") {
     dependsOn("generateIconKotlin")
+
+    from(layout.projectDirectory.file("LICENSE.txt")) {
+        into("META-INF")
+    }
+    from(layout.projectDirectory.file("THIRD_PARTY_NOTICES.txt")) {
+        into("META-INF")
+    }
 }
